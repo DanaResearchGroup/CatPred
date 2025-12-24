@@ -1,0 +1,3 @@
+[console_scripts]
+catpred_predict = catpred.train:catpred_predict
+catpred_train = catpred.train:catpred_train

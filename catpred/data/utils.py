@@ -400,8 +400,36 @@ def get_data(path: str,
     if protein_records_path is None:
         protein_records = None
     else:
-        with gzip.open(protein_records_path, "rt", encoding="utf-8") as f:
-            protein_records = json.load(f)
+        # Detect if file is gzipped by extension or magic bytes, then load accordingly
+        is_gzipped = protein_records_path.endswith('.gz') or protein_records_path.endswith('.gzip')
+        if not is_gzipped:
+            # Check magic bytes
+            try:
+                with open(protein_records_path, 'rb') as f:
+                    magic = f.read(2)
+                    is_gzipped = (magic == b'\x1f\x8b')
+            except:
+                pass
+        
+        if is_gzipped:
+            # Handle potentially double-gzipped files
+            with open(protein_records_path, 'rb') as f:
+                compressed_data = f.read()
+            
+            # Decompress once
+            decompressed = gzip.decompress(compressed_data)
+            
+            # Check if still gzipped (double-gzipped file)
+            if decompressed[:2] == b'\x1f\x8b':
+                # Decompress again
+                decompressed = gzip.decompress(decompressed)
+            
+            # Decode and parse JSON
+            content = decompressed.decode("utf-8")
+            protein_records = json.loads(content)
+        else:
+            with open(protein_records_path, "r", encoding="utf-8") as f:
+                protein_records = json.load(f)
         
     if args is not None:
         # Prefer explicit function arguments but default to args if not provided
