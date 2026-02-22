@@ -28,7 +28,7 @@ def create_csv_sh(parameter, input_file_path, checkpoint_dir):
         os.makedirs('.cursor', exist_ok=True)
         with open('.cursor/debug.log', 'a') as log:
             log.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H5", "location": "demo_run.py:25", "message": "create_csv_sh() function entry", "data": {"parameter": parameter, "input_file_path": input_file_path, "checkpoint_dir": checkpoint_dir, "input_file_exists": os.path.exists(input_file_path)}, "timestamp": int(time.time() * 1000)}) + "\n")
-    except Exception as e:
+    except Exception:
         pass
     # #endregion
     
@@ -36,27 +36,68 @@ def create_csv_sh(parameter, input_file_path, checkpoint_dir):
     smiles_list = df.SMILES
     seq_list = df.sequence
     smiles_list_new = []
+    invalid_rows = []
 
     for i, smi in enumerate(smiles_list):
+        # Check for NaN or empty values
+        if pd.isna(smi) or (isinstance(smi, str) and smi.strip() == ''):
+            invalid_rows.append((i, "Empty or missing SMILES value"))
+            continue
+        
         try:
             mol = Chem.MolFromSmiles(smi)
+            if mol is None:
+                invalid_rows.append((i, "Failed to parse SMILES (returned None)"))
+                continue
             smi = Chem.MolToSmiles(mol)
             if parameter == 'kcat' and '.' in smi:
                 smi = '.'.join(sorted(smi.split('.')))
             smiles_list_new.append(smi)
-        except:
-            print(f'Invalid SMILES input in input row {i}')
-            print('Correct your input! Exiting..')
-            return None
+        except Exception as e:
+            invalid_rows.append((i, str(e)))
+
+    if invalid_rows:
+        print(f'\nFound {len(invalid_rows)} invalid SMILES row(s):')
+        for row_idx, error_msg in invalid_rows:
+            print(f'  Row {row_idx}: {error_msg}')
+            if row_idx < len(smiles_list):
+                smi_preview = str(smiles_list.iloc[row_idx])[:100]
+                print(f'    SMILES preview: {smi_preview}...' if len(str(smiles_list.iloc[row_idx])) > 100 else f'    SMILES: {smiles_list.iloc[row_idx]}')
+        print('\nCorrect your input! Exiting..')
+        return None, None
 
     valid_aas = set('ACDEFGHIKLMNPQRSTVWY')
+    invalid_seq_rows = []
     for i, seq in enumerate(seq_list):
         if not set(seq).issubset(valid_aas):
-            print(f'Invalid Enzyme sequence input in row {i}!')
-            print('Correct your input! Exiting..')
-            return None
+            invalid_seq_rows.append(i)
 
-    input_file_new_path = f'{input_file_path[:-4]}_input.csv'
+    if invalid_seq_rows:
+        print(f'\nFound {len(invalid_seq_rows)} invalid sequence row(s):')
+        for row_idx in invalid_seq_rows:
+            print(f'  Row {row_idx}: Contains invalid amino acid characters')
+            if row_idx < len(seq_list):
+                seq_preview = str(seq_list.iloc[row_idx])[:100]
+                print(f'    Sequence preview: {seq_preview}...' if len(str(seq_list.iloc[row_idx])) > 100 else f'    Sequence: {seq_list.iloc[row_idx]}')
+        print('\nCorrect your input! Exiting..')
+        return None, None
+
+    # Extract base name from input file (remove extension and "input" if present)
+    input_basename = os.path.basename(input_file_path)
+    if input_basename.endswith('.csv'):
+        input_basename = input_basename[:-4]
+    if input_basename.endswith('_input'):
+        input_basename = input_basename[:-6]
+    
+    # Create output directory structure
+    output_base_dir = 'output'
+    output_dir = os.path.join(output_base_dir, input_basename)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create file paths within the output directory
+    input_file_new_path = os.path.join(output_dir, f'{input_basename}_input.csv')
+    output_file_path = os.path.join(output_dir, f'{input_basename}_{parameter}_output.csv')
+    
     df['SMILES'] = smiles_list_new
     df.to_csv(input_file_new_path)
 
@@ -66,19 +107,24 @@ def create_csv_sh(parameter, input_file_path, checkpoint_dir):
         script_path = os.path.abspath('predict.sh')
         with open('.cursor/debug.log', 'a') as log:
             log.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H1,H5", "location": "demo_run.py:58", "message": "Before creating predict.sh", "data": {"script_path": script_path, "cwd": os.getcwd()}, "timestamp": int(time.time() * 1000)}) + "\n")
-    except Exception as e:
+    except Exception:
         pass
     # #endregion
 
+    # Get paths for predict.sh (relative to project root)
+    test_file_prefix = input_file_new_path[:-4]  # Remove .csv extension
+    records_file = f'{test_file_prefix}.json.gz'
+    
     with open('predict.sh', 'w') as f:
         script_content = f'''#!/bin/bash
 set -euo pipefail
-TEST_FILE_PREFIX={input_file_new_path[:-4]}
-RECORDS_FILE=${{TEST_FILE_PREFIX}}.json.gz
+TEST_FILE_PREFIX={test_file_prefix}
+OUTPUT_FILE={output_file_path}
+RECORDS_FILE={records_file}
 CHECKPOINT_DIR={checkpoint_dir}
 
 python ./scripts/create_pdbrecords.py --data_file ${{TEST_FILE_PREFIX}}.csv --out_file ${{RECORDS_FILE}}
-python predict.py --test_path ${{TEST_FILE_PREFIX}}.csv --preds_path ${{TEST_FILE_PREFIX}}_output.csv --checkpoint_dir $CHECKPOINT_DIR --uncertainty_method mve --smiles_columns SMILES --individual_ensemble_predictions --protein_records_path ${{RECORDS_FILE}}
+python predict.py --test_path ${{TEST_FILE_PREFIX}}.csv --preds_path $OUTPUT_FILE --checkpoint_dir $CHECKPOINT_DIR --uncertainty_method mve --smiles_columns SMILES --individual_ensemble_predictions --protein_records_path ${{RECORDS_FILE}}
 '''
         f.write(script_content)
 
@@ -115,7 +161,7 @@ python predict.py --test_path ${{TEST_FILE_PREFIX}}.csv --preds_path ${{TEST_FIL
         pass
     # #endregion
 
-    return input_file_new_path[:-4]+'_output.csv'
+    return output_file_path, output_dir
 
 def get_predictions(parameter, outfile):
     """
@@ -176,7 +222,7 @@ def main(args):
         os.makedirs('.cursor', exist_ok=True)
         with open('.cursor/debug.log', 'a') as log:
             log.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H5", "location": "demo_run.py:120", "message": "main() function entry", "data": {"cwd": os.getcwd(), "parameter": args.parameter, "input_file": args.input_file, "checkpoint_dir": args.checkpoint_dir}, "timestamp": int(time.time() * 1000)}) + "\n")
-    except Exception as e:
+    except Exception:
         pass  # Don't fail if logging fails
     # #endregion
     
@@ -190,18 +236,20 @@ def main(args):
         pass
     # #endregion
 
-    outfile = create_csv_sh(args.parameter, args.input_file, args.checkpoint_dir)
+    result = create_csv_sh(args.parameter, args.input_file, args.checkpoint_dir)
     
     # #region agent log
     try:
         with open('.cursor/debug.log', 'a') as log:
-            log.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H5", "location": "demo_run.py:137", "message": "After calling create_csv_sh", "data": {"outfile": outfile}, "timestamp": int(time.time() * 1000)}) + "\n")
+            log.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H5", "location": "demo_run.py:137", "message": "After calling create_csv_sh", "data": {"result": result}, "timestamp": int(time.time() * 1000)}) + "\n")
     except:
         pass
     # #endregion
     
-    if outfile is None:
+    if result is None or result[0] is None:
         return
+    
+    outfile, output_dir = result
 
     print('Predicting.. This will take a while..')
 
@@ -211,7 +259,7 @@ def main(args):
         script_executable = os.access('predict.sh', os.X_OK) if script_exists else False
         with open('.cursor/debug.log', 'a') as log:
             log.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H1,H5", "location": "demo_run.py:145", "message": "Before executing predict.sh", "data": {"script_exists": script_exists, "script_executable": script_executable, "cwd": os.getcwd(), "script_abs_path": os.path.abspath('predict.sh') if script_exists else None}, "timestamp": int(time.time() * 1000)}) + "\n")
-    except Exception as e:
+    except Exception:
         pass
     # #endregion
 
@@ -224,16 +272,16 @@ def main(args):
     try:
         with open('.cursor/debug.log', 'a') as log:
             log.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H1", "location": "demo_run.py:151", "message": "After executing predict.sh", "data": {"exit_code": exit_code, "exit_code_hex": hex(exit_code)}, "timestamp": int(time.time() * 1000)}) + "\n")
-    except Exception as e:
+    except Exception:
         pass
     # #endregion
 
     output_final = get_predictions(args.parameter, outfile)
     filename = outfile.split('/')[-1]
-    results_dir = os.path.join('..', 'results')
-    os.makedirs(results_dir, exist_ok=True)
-    output_final.to_csv(os.path.join(results_dir, filename), index=False)
-    print('Output saved to results/', filename)
+    # Save final results in the same output directory
+    final_output_path = os.path.join(output_dir, filename)
+    output_final.to_csv(final_output_path, index=False)
+    print(f'Output saved to {output_dir}/{filename}')
 
 if __name__ == "__main__":
     # #region agent log
@@ -244,10 +292,9 @@ if __name__ == "__main__":
             import json
             import time
             log.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H5", "location": "demo_run.py:236", "message": "Script entry point", "data": {"cwd": os.getcwd()}, "timestamp": int(time.time() * 1000)}) + "\n")
-    except Exception as e:
-        import traceback
-        with open('.cursor/debug.log', 'a') as log:
-            log.write(f"ERROR in entry logging: {str(e)}\n{traceback.format_exc()}\n")
+    except Exception:
+        # Silently ignore logging errors (e.g., read-only filesystem)
+        pass
     # #endregion
     
     parser = argparse.ArgumentParser(description="Predict enzyme kinetics parameters.")
@@ -287,7 +334,9 @@ if __name__ == "__main__":
             import traceback
             with open('.cursor/debug.log', 'a') as log:
                 log.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H5", "location": "demo_run.py:268", "message": "Exception in main()", "data": {"error": str(e), "traceback": traceback.format_exc()}, "timestamp": int(time.time() * 1000)}) + "\n")
-        except:
+        except Exception:
+            # Silently ignore logging errors (e.g., read-only filesystem)
             pass
         # #endregion
         raise
+

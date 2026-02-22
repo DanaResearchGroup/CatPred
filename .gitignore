@@ -32,3 +32,14 @@ catpred/data/__pycache__/esm_utils.cpython-312.pyc
 catpred/data/__pycache__/data.cpython-312.pyc
 catpred/data/__pycache__/cache_utils.cpython-312.pyc
 catpred/data/__pycache__/__init__.cpython-312.pyc
+
+# User data files (do not commit)
+demo/*.csv
+demo/*.json.gz
+demo/*_input.csv
+demo/*_output.csv
+demo/*_kcat_output.csv
+demo/*_km_output.csv
+demo/*_ki_output.csv
+../results/
+.cursor/debug.log

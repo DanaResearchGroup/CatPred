@@ -432,6 +432,11 @@ class MoleculeModel(nn.Module):
                 seq_outs, _ = self.multihead_attn(q, k, seq_outs)
 
                 if self.args.add_esm_feats:
+                    # Align sequence lengths before concatenation
+                    if esm_feature_arr.shape[1] != seq_outs.shape[1]:
+                        min_len = min(esm_feature_arr.shape[1], seq_outs.shape[1])
+                        esm_feature_arr = esm_feature_arr[:, :min_len, :]
+                        seq_outs = seq_outs[:, :min_len, :]
                     seq_outs = torch.cat([esm_feature_arr, seq_outs], dim=-1)
                     
                 # pool attentively
